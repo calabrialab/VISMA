@@ -1,0 +1,2 @@
+"n_snp_mutations","mean_delta_read_end_distance","median_delta_read_end_distance","iqr_delta_read_end_distance","pct_alt_closer_to_read_end","mean_delta_phred","median_delta_phred","iqr_delta_phred","pct_alt_lower_phred"
+1639,0.000179655664010456,0.00197372456049796,0.0948791267625079,48.1391092129347,-2.10642438053948,-0.480072463768117,2.9177945728436,62.3550945698597

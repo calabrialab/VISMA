@@ -1,0 +1,743 @@
+---
+title: "Point-by-point response analyses: mutation position and sequencing-quality checks"
+author: "Francesco Gazzo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: cosmo
+params:
+  mpileup_summary_file: "mpileup_quality_summary_per_mutation.xlsx"
+  phred_wide_file: "df_phred_wide.xlsx"
+  theme_file: "ggplot.R"
+---
+
+# Aim of the analysis
+
+This report documents the additional analyses performed for the point-by-point response.
+
+The goal is to show, in a reproducible way, how the figures and statistical summaries were generated.
+
+The report focuses on two main questions:
+
+1. Are mutations spatially enriched around the integration site?
+2. Do ALT-supporting bases show evidence of technical bias, such as proximity to read ends or reduced Phred quality?
+
+# Setup
+
+```{r setup}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  dpi = 300
+)
+
+suppressPackageStartupMessages({
+  library(openxlsx)
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+  library(purrr)
+  library(broom)
+  library(ggplot2)
+  library(knitr)
+})
+
+# ----------------------------------------------------------
+# Load custom ggplot theme, if available
+# ----------------------------------------------------------
+
+if (file.exists(params$theme_file)) {
+  source(params$theme_file)
+} else {
+  message("ggplot.R not found. Using theme_bw() as fallback.")
+  my_theme <- theme_bw(base_size = 12)
+}
+
+# ----------------------------------------------------------
+# Output folders
+# ----------------------------------------------------------
+
+output_dir <- "point_by_point_outputs"
+plot_dir <- file.path(output_dir, "plots")
+table_dir <- file.path(output_dir, "tables")
+
+dir.create(output_dir, showWarnings = FALSE)
+dir.create(plot_dir, showWarnings = FALSE)
+dir.create(table_dir, showWarnings = FALSE)
+
+# ----------------------------------------------------------
+# Dataset order and colors
+# ----------------------------------------------------------
+
+dataset_levels <- c(
+  "Cdkn2a-/- LV.SF.LTR",
+  "Cdkn2a-/- SIN.LV.PGK",
+  "WT LV.SF.LTR",
+  "WT SIN.LV.PGK"
+)
+
+dataset_colors <- c(
+  "Cdkn2a-/- LV.SF.LTR" = "#7fb3d5",
+  "Cdkn2a-/- SIN.LV.PGK" = "#FF8C00",
+  "WT LV.SF.LTR" = "#8FBC8B",
+  "WT SIN.LV.PGK" = "#D98880"
+)
+```
+
+# Input files
+
+This report uses two input files:
+
+```{r input-files}
+input_files <- c(
+  params$mpileup_summary_file,
+  params$phred_wide_file
+)
+
+input_files
+```
+
+```{r check-input-files}
+missing_files <- input_files[!file.exists(input_files)]
+
+if (length(missing_files) > 0) {
+  stop(
+    "Missing input file(s): ",
+    paste(missing_files, collapse = ", "),
+    ". Please place them in the working directory or update the YAML params."
+  )
+}
+```
+
+# Load data
+
+```{r load-data}
+df_raw <- read.xlsx(params$mpileup_summary_file)
+df_phred <- read.xlsx(params$phred_wide_file)
+
+data.frame(
+  dataset = c("mpileup summary", "phred wide"),
+  rows = c(nrow(df_raw), nrow(df_phred)),
+  columns = c(ncol(df_raw), ncol(df_phred))
+) %>%
+  kable(caption = "Input dataset dimensions")
+```
+
+# Required columns
+
+```{r required-columns}
+required_raw_cols <- c(
+  "ID_gene",
+  "locus",
+  "GenVec",
+  "Mutation"
+)
+
+required_phred_cols <- c(
+  "delta_ALT_minus_REF_dist_to_end",
+  "delta_ALT_minus_REF_phred"
+)
+
+missing_raw_cols <- setdiff(required_raw_cols, names(df_raw))
+missing_phred_cols <- setdiff(required_phred_cols, names(df_phred))
+
+if (length(missing_raw_cols) > 0) {
+  stop(
+    "Missing column(s) in ",
+    params$mpileup_summary_file,
+    ": ",
+    paste(missing_raw_cols, collapse = ", ")
+  )
+}
+
+if (length(missing_phred_cols) > 0) {
+  stop(
+    "Missing column(s) in ",
+    params$phred_wide_file,
+    ": ",
+    paste(missing_phred_cols, collapse = ", ")
+  )
+}
+```
+
+# 1. Spatial distribution of mutations relative to the integration site
+
+## Rationale
+
+This analysis evaluates where mutations are located relative to the integration site.
+
+The integration-site coordinate is extracted from `ID_gene`.
+
+The signed distance is calculated as:
+
+```{r distance-definition, echo=FALSE}
+data.frame(
+  variable = "distance_from_is",
+  definition = "locus - is_position"
+) %>%
+  kable(caption = "Definition of signed distance from integration site")
+```
+
+Interpretation:
+
+- negative values indicate mutations upstream of the integration site;
+- positive values indicate mutations downstream of the integration site;
+- values close to zero indicate mutations close to the integration site.
+
+## Build mutation-to-IS distance table
+
+```{r build-distance-table}
+df_distance <- df_raw %>%
+  mutate(
+    is_position = as.numeric(
+      str_match(ID_gene, "chr[0-9A-Za-z]+_([0-9]+)_")[, 2]
+    ),
+    distance_from_is = locus - is_position,
+    abs_distance_from_is = abs(distance_from_is),
+    GenVec = factor(GenVec, levels = dataset_levels)
+  ) %>%
+  filter(
+    !is.na(GenVec),
+    !is.na(is_position),
+    !is.na(locus),
+    !is.na(distance_from_is)
+  ) %>%
+  separate(
+    GenVec,
+    into = c("Genotype", "Vector"),
+    sep = " ",
+    remove = FALSE,
+    extra = "merge"
+  ) %>%
+  select(
+    GenVec,
+    Genotype,
+    Vector,
+    Mutation,
+    ID_gene,
+    is_position,
+    locus,
+    distance_from_is,
+    abs_distance_from_is
+  )
+
+if (nrow(df_distance) == 0) {
+  stop("No valid rows available after building df_distance.")
+}
+
+head(df_distance, 10) %>%
+  kable(caption = "First rows of the mutation-to-IS distance table")
+```
+
+## Descriptive summary
+
+```{r distance-summary}
+distance_summary <- df_distance %>%
+  group_by(GenVec, Genotype, Vector) %>%
+  summarise(
+    n_mutations = n(),
+    mean_distance_from_is = mean(distance_from_is, na.rm = TRUE),
+    median_distance_from_is = median(distance_from_is, na.rm = TRUE),
+    sd_distance_from_is = sd(distance_from_is, na.rm = TRUE),
+    median_abs_distance_from_is = median(abs_distance_from_is, na.rm = TRUE),
+    iqr_abs_distance_from_is = IQR(abs_distance_from_is, na.rm = TRUE),
+    min_distance_from_is = min(distance_from_is, na.rm = TRUE),
+    max_distance_from_is = max(distance_from_is, na.rm = TRUE),
+    pct_within_100_bp = mean(abs_distance_from_is <= 100, na.rm = TRUE) * 100,
+    pct_within_1kb = mean(abs_distance_from_is <= 1000, na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+write.csv(
+  distance_summary,
+  file.path(table_dir, "distance_from_is_summary.csv"),
+  row.names = FALSE
+)
+
+distance_summary %>%
+  kable(
+    digits = 3,
+    caption = "Summary of mutation distances from integration site"
+  )
+```
+
+## Statistical test: is signed distance centered around zero?
+
+For each dataset, a one-sample Wilcoxon signed-rank test is used to evaluate whether the signed distance distribution is centered around zero.
+
+```{r safe-wilcox-function}
+safe_wilcox_test <- function(x) {
+  x <- x[!is.na(x)]
+
+  if (length(x) < 3 || length(unique(x)) < 2) {
+    return(tibble(
+      statistic = NA_real_,
+      p.value = NA_real_,
+      method = "Wilcoxon signed-rank test",
+      alternative = "two.sided",
+      note = "Insufficient sample size or variability"
+    ))
+  }
+
+  broom::tidy(
+    wilcox.test(x, mu = 0, exact = FALSE)
+  ) %>%
+    mutate(note = NA_character_)
+}
+```
+
+```{r distance-wilcox-tests}
+distance_wilcox_results <- df_distance %>%
+  group_by(GenVec) %>%
+  summarise(values = list(distance_from_is), .groups = "drop") %>%
+  mutate(test = map(values, safe_wilcox_test)) %>%
+  select(-values) %>%
+  unnest(test)
+
+write.csv(
+  distance_wilcox_results,
+  file.path(table_dir, "distance_from_is_wilcox_tests.csv"),
+  row.names = FALSE
+)
+
+distance_wilcox_results %>%
+  kable(
+    digits = 4,
+    caption = "Wilcoxon signed-rank tests on signed distance from IS"
+  )
+```
+
+## Statistical test: compare absolute distance across datasets
+
+The Kruskal-Wallis test is used to compare the absolute mutation distance from the integration site across datasets.
+
+```{r distance-kruskal}
+distance_kruskal_result <- broom::tidy(
+  kruskal.test(abs_distance_from_is ~ GenVec, data = df_distance)
+)
+
+write.csv(
+  distance_kruskal_result,
+  file.path(table_dir, "absolute_distance_from_is_kruskal_test.csv"),
+  row.names = FALSE
+)
+
+distance_kruskal_result %>%
+  kable(
+    digits = 4,
+    caption = "Kruskal-Wallis test on absolute distance from IS"
+  )
+```
+
+## Plot: signed distance from integration site
+
+```{r plot-distance-histogram}
+p_distance_hist <- ggplot(
+  df_distance,
+  aes(x = distance_from_is, fill = GenVec)
+) +
+  geom_histogram(
+    bins = 50,
+    alpha = 0.7,
+    position = "identity"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.4
+  ) +
+  facet_grid(Genotype ~ Vector) +
+  scale_fill_manual(values = dataset_colors, drop = FALSE) +
+  my_theme +
+  labs(
+    title = "Spatial distribution of mutations relative to the integration site",
+    x = "Signed distance from IS, bp",
+    y = "Number of mutations"
+  ) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank()
+  )
+
+p_distance_hist
+
+ggsave(
+  filename = file.path(plot_dir, "distance_from_is_histogram.png"),
+  plot = p_distance_hist,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(plot_dir, "distance_from_is_histogram.pdf"),
+  plot = p_distance_hist,
+  width = 8,
+  height = 5
+)
+```
+
+## Plot: absolute distance from integration site
+
+```{r plot-absolute-distance-boxplot}
+p_abs_distance_boxplot <- ggplot(
+  df_distance,
+  aes(x = GenVec, y = abs_distance_from_is, fill = GenVec)
+) +
+  geom_boxplot(outlier.alpha = 0.35) +
+  scale_y_log10() +
+  scale_fill_manual(values = dataset_colors, drop = FALSE) +
+  my_theme +
+  labs(
+    title = "Absolute distance between mutations and the integration site",
+    x = NULL,
+    y = "Absolute distance from IS, bp, log10 scale"
+  ) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 35, hjust = 1)
+  )
+
+p_abs_distance_boxplot
+
+ggsave(
+  filename = file.path(plot_dir, "absolute_distance_from_is_boxplot.png"),
+  plot = p_abs_distance_boxplot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(plot_dir, "absolute_distance_from_is_boxplot.pdf"),
+  plot = p_abs_distance_boxplot,
+  width = 8,
+  height = 5
+)
+```
+
+# 2. Read-end and Phred-quality checks
+
+## Rationale
+
+This analysis evaluates whether ALT-supporting bases show evidence of technical bias compared with REF-supporting bases.
+
+The two main variables are:
+
+- `delta_ALT_minus_REF_dist_to_end`
+- `delta_ALT_minus_REF_phred`
+
+Interpretation:
+
+- `delta_ALT_minus_REF_dist_to_end < 0`: ALT-supporting bases are closer to the nearest read end than REF-supporting bases.
+- `delta_ALT_minus_REF_dist_to_end > 0`: ALT-supporting bases are farther from the nearest read end than REF-supporting bases.
+- `delta_ALT_minus_REF_phred < 0`: ALT-supporting bases have lower mean Phred quality than REF-supporting bases.
+- `delta_ALT_minus_REF_phred > 0`: ALT-supporting bases have higher mean Phred quality than REF-supporting bases.
+
+## Build quality table
+
+```{r build-quality-table}
+df_quality <- df_phred %>%
+  mutate(
+    delta_ALT_minus_REF_dist_to_end =
+      as.numeric(delta_ALT_minus_REF_dist_to_end),
+    delta_ALT_minus_REF_phred =
+      as.numeric(delta_ALT_minus_REF_phred)
+  ) %>%
+  filter(
+    !is.na(delta_ALT_minus_REF_dist_to_end),
+    !is.na(delta_ALT_minus_REF_phred)
+  )
+
+if ("GenVec" %in% names(df_quality)) {
+  df_quality <- df_quality %>%
+    mutate(GenVec = factor(GenVec, levels = dataset_levels))
+}
+
+if (nrow(df_quality) == 0) {
+  stop("No valid rows available after building df_quality.")
+}
+
+head(df_quality, 10) %>%
+  kable(caption = "First rows of the quality table")
+```
+
+## Descriptive summary
+
+```{r quality-summary}
+quality_summary <- df_quality %>%
+  summarise(
+    n_snp_mutations = n(),
+
+    mean_delta_read_end_distance =
+      mean(delta_ALT_minus_REF_dist_to_end, na.rm = TRUE),
+
+    median_delta_read_end_distance =
+      median(delta_ALT_minus_REF_dist_to_end, na.rm = TRUE),
+
+    iqr_delta_read_end_distance =
+      IQR(delta_ALT_minus_REF_dist_to_end, na.rm = TRUE),
+
+    pct_alt_closer_to_read_end =
+      mean(delta_ALT_minus_REF_dist_to_end < 0, na.rm = TRUE) * 100,
+
+    mean_delta_phred =
+      mean(delta_ALT_minus_REF_phred, na.rm = TRUE),
+
+    median_delta_phred =
+      median(delta_ALT_minus_REF_phred, na.rm = TRUE),
+
+    iqr_delta_phred =
+      IQR(delta_ALT_minus_REF_phred, na.rm = TRUE),
+
+    pct_alt_lower_phred =
+      mean(delta_ALT_minus_REF_phred < 0, na.rm = TRUE) * 100
+  )
+
+write.csv(
+  quality_summary,
+  file.path(table_dir, "quality_delta_summary.csv"),
+  row.names = FALSE
+)
+
+quality_summary %>%
+  kable(
+    digits = 4,
+    caption = "Global ALT-minus-REF read-end and Phred-quality summaries"
+  )
+```
+
+## Optional summary by dataset
+
+This section is generated only if `GenVec` is present in `df_phred_wide.xlsx`.
+
+```{r quality-summary-by-dataset}
+if ("GenVec" %in% names(df_quality) && any(!is.na(df_quality$GenVec))) {
+
+  quality_summary_by_dataset <- df_quality %>%
+    filter(!is.na(GenVec)) %>%
+    group_by(GenVec) %>%
+    summarise(
+      n_snp_mutations = n(),
+
+      median_delta_read_end_distance =
+        median(delta_ALT_minus_REF_dist_to_end, na.rm = TRUE),
+
+      pct_alt_closer_to_read_end =
+        mean(delta_ALT_minus_REF_dist_to_end < 0, na.rm = TRUE) * 100,
+
+      median_delta_phred =
+        median(delta_ALT_minus_REF_phred, na.rm = TRUE),
+
+      pct_alt_lower_phred =
+        mean(delta_ALT_minus_REF_phred < 0, na.rm = TRUE) * 100,
+
+      .groups = "drop"
+    )
+
+  write.csv(
+    quality_summary_by_dataset,
+    file.path(table_dir, "quality_delta_summary_by_dataset.csv"),
+    row.names = FALSE
+  )
+
+  quality_summary_by_dataset %>%
+    kable(
+      digits = 4,
+      caption = "ALT-minus-REF read-end and Phred-quality summaries by dataset"
+    )
+}
+```
+
+## Statistical tests on quality deltas
+
+A one-sample Wilcoxon signed-rank test is used to evaluate whether each ALT-minus-REF delta distribution is centered around zero.
+
+```{r quality-wilcox-tests}
+read_end_wilcox <- safe_wilcox_test(
+  df_quality$delta_ALT_minus_REF_dist_to_end
+) %>%
+  mutate(variable = "delta_ALT_minus_REF_dist_to_end", .before = 1)
+
+phred_wilcox <- safe_wilcox_test(
+  df_quality$delta_ALT_minus_REF_phred
+) %>%
+  mutate(variable = "delta_ALT_minus_REF_phred", .before = 1)
+
+quality_wilcox_results <- bind_rows(
+  read_end_wilcox,
+  phred_wilcox
+)
+
+write.csv(
+  quality_wilcox_results,
+  file.path(table_dir, "quality_delta_wilcox_tests.csv"),
+  row.names = FALSE
+)
+
+quality_wilcox_results %>%
+  kable(
+    digits = 4,
+    caption = "Wilcoxon signed-rank tests on ALT-minus-REF quality deltas"
+  )
+```
+
+## Plot: ALT-minus-REF distance from nearest read end
+
+```{r plot-read-end-distance}
+p_read_end <- ggplot(
+  df_quality,
+  aes(x = delta_ALT_minus_REF_dist_to_end)
+) +
+  geom_histogram(bins = 60) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_bw() +
+  labs(
+    x = "ALT - REF relative distance from nearest read end",
+    y = "Number of SNP mutations",
+    title = "No enrichment of ALT-supporting bases near read ends"
+  )
+
+p_read_end
+
+ggsave(
+  filename = file.path(plot_dir, "alt_minus_ref_read_end_distance.png"),
+  plot = p_read_end,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(plot_dir, "alt_minus_ref_read_end_distance.pdf"),
+  plot = p_read_end,
+  width = 8,
+  height = 5
+)
+```
+
+## Plot: ALT-minus-REF Phred quality
+
+```{r plot-phred-quality}
+p_phred <- ggplot(
+  df_quality,
+  aes(x = delta_ALT_minus_REF_phred)
+) +
+  geom_histogram(bins = 60) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_bw() +
+  labs(
+    x = "ALT - REF mean Phred quality",
+    y = "Number of SNP mutations",
+    title = "ALT-supporting bases show a modest Phred reduction"
+  )
+
+p_phred
+
+ggsave(
+  filename = file.path(plot_dir, "alt_minus_ref_phred_quality.png"),
+  plot = p_phred,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(plot_dir, "alt_minus_ref_phred_quality.pdf"),
+  plot = p_phred,
+  width = 8,
+  height = 5
+)
+```
+
+# 3. Optional stratified quality plots
+
+These plots are generated only if the `GenVec` column is available in `df_phred_wide.xlsx`.
+
+```{r optional-stratified-quality-plots}
+if ("GenVec" %in% names(df_quality) && any(!is.na(df_quality$GenVec))) {
+
+  p_read_end_by_dataset <- ggplot(
+    df_quality,
+    aes(x = delta_ALT_minus_REF_dist_to_end, fill = GenVec)
+  ) +
+    geom_histogram(
+      bins = 60,
+      alpha = 0.7,
+      position = "identity"
+    ) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    facet_wrap(~ GenVec, scales = "free_y") +
+    scale_fill_manual(values = dataset_colors, drop = FALSE) +
+    theme_bw() +
+    labs(
+      x = "ALT - REF relative distance from nearest read end",
+      y = "Number of SNP mutations",
+      title = "Read-end distance delta by dataset"
+    ) +
+    theme(legend.position = "none")
+
+  p_read_end_by_dataset
+
+  ggsave(
+    filename = file.path(plot_dir, "alt_minus_ref_read_end_distance_by_dataset.png"),
+    plot = p_read_end_by_dataset,
+    width = 9,
+    height = 6,
+    dpi = 300
+  )
+
+  p_phred_by_dataset <- ggplot(
+    df_quality,
+    aes(x = delta_ALT_minus_REF_phred, fill = GenVec)
+  ) +
+    geom_histogram(
+      bins = 60,
+      alpha = 0.7,
+      position = "identity"
+    ) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    facet_wrap(~ GenVec, scales = "free_y") +
+    scale_fill_manual(values = dataset_colors, drop = FALSE) +
+    theme_bw() +
+    labs(
+      x = "ALT - REF mean Phred quality",
+      y = "Number of SNP mutations",
+      title = "Phred-quality delta by dataset"
+    ) +
+    theme(legend.position = "none")
+
+  p_phred_by_dataset
+
+  ggsave(
+    filename = file.path(plot_dir, "alt_minus_ref_phred_quality_by_dataset.png"),
+    plot = p_phred_by_dataset,
+    width = 9,
+    height = 6,
+    dpi = 300
+  )
+}
+```
+
+# 4. Output files
+
+The report also saves the main output tables and plots to disk.
+
+```{r output-files}
+list.files(output_dir, recursive = TRUE) %>%
+  data.frame(file = .) %>%
+  kable(caption = "Files generated by this report")
+```
+
+# 5. Reproducibility
+
+```{r session-info}
+sessionInfo()
+```

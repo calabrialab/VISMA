@@ -1,0 +1,5 @@
+"GenVec","Genotype","Vector","n_mutations","mean_distance_from_is","median_distance_from_is","sd_distance_from_is","median_abs_distance_from_is","iqr_abs_distance_from_is","min_distance_from_is","max_distance_from_is","pct_within_100_bp","pct_within_1kb"
+"Cdkn2a-/- LV.SF.LTR","Cdkn2a-/-","LV.SF.LTR",264,4.21969696969695,14.5,165.216360710118,71,146.25,-520,598,62.1212121212121,100
+"Cdkn2a-/- SIN.LV.PGK","Cdkn2a-/-","SIN.LV.PGK",549,-2.9162112932605,-7,186.368709515169,89,177,-714,524,54.0983606557377,100
+"WT LV.SF.LTR","WT","LV.SF.LTR",303,-6.01980198019792,-1,225.433518203842,99,201,-688,599,50.1650165016502,100
+"WT SIN.LV.PGK","WT","SIN.LV.PGK",554,6.66787003610121,8,206.317075839976,110,205,-539,610,47.8339350180505,100

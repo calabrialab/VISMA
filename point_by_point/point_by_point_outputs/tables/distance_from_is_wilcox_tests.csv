@@ -1,0 +1,5 @@
+"GenVec","statistic","p.value","method","alternative","note"
+"Cdkn2a-/- LV.SF.LTR",18894,0.258374591416298,"Wilcoxon signed rank test with continuity correction","two.sided",NA
+"Cdkn2a-/- SIN.LV.PGK",75335,0.967393419138487,"Wilcoxon signed rank test with continuity correction","two.sided",NA
+"WT LV.SF.LTR",22842,0.903267329088532,"Wilcoxon signed rank test with continuity correction","two.sided",NA
+"WT SIN.LV.PGK",79798.5,0.436881712598299,"Wilcoxon signed rank test with continuity correction","two.sided",NA
